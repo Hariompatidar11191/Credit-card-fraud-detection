@@ -27,3 +27,10 @@ Download it from:
 https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud
 
 Place the file `creditcard.csv` in the project folder before running the notebook.
+
+# Credit Card Fraud Detection
+
+## Live Demo
+https://credit-card-fraud-detection-dmsxefaojzdxxzwgr4tbj3.streamlit.app/
+
+
