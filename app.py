@@ -1,55 +1,217 @@
 import streamlit as st
-import numpy as np
-import joblib
+import sqlite3
+import pandas as pd
+import matplotlib.pyplot as plt
+import google.generativeai as genai
 import os
 
-base_dir = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(base_dir, "fraud_model.pkl")
-model = joblib.load(model_path)
+# -----------------------------
+# Gemini setup
+# -----------------------------
 
-st.set_page_config(page_title="Fraud Detection", layout="centered")
+# Read API key from environment
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-3-flash-preview")
+# -----------------------------
+# Streamlit config
+# -----------------------------
+st.set_page_config(page_title="AI BI Agent", layout="wide")
+st.title("AI Business Intelligence Chat Agent")
 
-st.title("Credit Card Fraud Detection Dashboard")
+# -----------------------------
+# Database connection
+# -----------------------------
+conn = sqlite3.connect("sales.db")
 
-st.write("Paste all 30 values at once separated by commas.")
-st.write("Order: Time, V1–V28, Amount")
+# -----------------------------
+# Run multiple SQL statements
+# -----------------------------
+def run_multiple_sql(sql_text):
+    queries = [q.strip() for q in sql_text.split(";") if q.strip()]
+    results = []
 
-sample_normal = "10000,-1.359807,-0.072781,2.536347,1.378155,-0.338321,0.462388,0.239599,0.098698,0.363787,0.090794,-0.551600,-0.617801,-0.991390,-0.311169,1.468177,-0.470401,0.207971,0.025791,0.403993,0.251412,-0.018307,0.277838,-0.110474,0.066928,0.128539,-0.189115,0.133558,-0.021053,149.62"
+    for q in queries:
+        try:
+            df = pd.read_sql(q, conn)
+            results.append((q, df))
+        except Exception as e:
+            results.append((q, str(e)))
 
-sample_fraud = "406,-2.312227,1.951992,-1.609851,3.997906,-0.522188,-1.426545,-2.537387,1.391657,-2.770089,-2.772272,3.202033,-2.899907,-0.595222,-4.289254,0.389724,-1.140747,-2.830056,-0.016822,0.416956,0.126911,0.517232,-0.035049,-0.465211,0.320198,0.044519,0.177840,0.261145,-0.143276,0.00"
+    return results
 
-col1, col2 = st.columns(2)
+# -----------------------------
+# Text to SQL (Gemini)
+# -----------------------------
+def text_to_sql(user_query):
+    schema = """
+    Table: sales_data
 
-with col1:
-    if st.button("Use Sample Normal"):
-        st.session_state["input"] = sample_normal
+    Columns:
+    ORDERNUMBER, QUANTITYORDERED, PRICEEACH, ORDERLINENUMBER,
+    SALES, ORDERDATE, STATUS, QTR_ID, MONTH_ID, YEAR_ID,
+    PRODUCTLINE, MSRP, PRODUCTCODE, CUSTOMERNAME, PHONE,
+    ADDRESSLINE1, ADDRESSLINE2, CITY, STATE, POSTALCODE,
+    COUNTRY, TERRITORY, CONTACTLASTNAME, CONTACTFIRSTNAME,
+    DEALSIZE
+    """
 
-with col2:
-    if st.button("Use Sample Fraud"):
-        st.session_state["input"] = sample_fraud
+    prompt = f"""
+    Convert the following question into valid SQLite SQL.
 
-default_text = st.session_state.get("input", "")
+    Rules:
+    - Use only table: sales_data
+    - Use only provided columns
+    - You may return one or more SQL statements
+    - Separate multiple queries using semicolons
+    - Do not explain anything
 
-user_input = st.text_area(
-    "Enter 30 values separated by commas:",
-    value=default_text,
-    height=100
-)
+    {schema}
 
-if st.button("Predict"):
-    try:
-        values = [float(x.strip()) for x in user_input.split(",")]
+    Question:
+    {user_query}
+    """
 
-        if len(values) != 30:
-            st.error("You must enter exactly 30 values.")
-        else:
-            input_data = np.array(values).reshape(1, -1)
-            prediction = model.predict(input_data)
+    response = model.generate_content(prompt)
+    return response.text.strip()
 
-            if prediction[0] == 1:
-                st.error("Fraudulent Transaction Detected")
+# -----------------------------
+# Auto chart selection
+# -----------------------------
+def auto_chart(df):
+    if len(df.columns) < 2:
+        return None
+
+    x = df.columns[0]
+    y = df.columns[1]
+
+    if "year" in x.lower() or "month" in x.lower():
+        return ("line", x, y)
+
+    return ("bar", x, y)
+
+# -----------------------------
+# AI Insights
+# -----------------------------
+def generate_insights(df, question):
+    summary = df.head(10).to_string()
+
+    prompt = f"""
+    You are a business analyst.
+
+    The user asked:
+    {question}
+
+    Here is the result data:
+    {summary}
+
+    Provide 2–3 short business insights.
+    """
+
+    response = model.generate_content(prompt)
+    return response.text
+
+# -----------------------------
+# Chat memory
+# -----------------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display chat history
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.write(msg["content"])
+
+# -----------------------------
+# Chat input
+# -----------------------------
+user_query = st.chat_input("Ask a business question...")
+
+if user_query:
+    # Show user message
+    st.session_state.messages.append(
+        {"role": "user", "content": user_query}
+    )
+    with st.chat_message("user"):
+        st.write(user_query)
+
+    # Generate SQL
+    with st.spinner("Generating SQL..."):
+        sql_query = text_to_sql(user_query)
+
+    with st.chat_message("assistant"):
+        st.subheader("Generated SQL")
+        st.code(sql_query, language="sql")
+
+        # Run SQL
+        results = run_multiple_sql(sql_query)
+
+        for i, (query, result) in enumerate(results, 1):
+            st.subheader(f"Result {i}")
+            st.code(query, language="sql")
+
+            if isinstance(result, pd.DataFrame):
+                st.dataframe(result, use_container_width=True)
+
+                # -----------------------------
+                # Auto chart
+                # -----------------------------
+                chart = auto_chart(result)
+                fig = None
+
+                if chart:
+                    chart_type, x, y = chart
+                    fig, ax = plt.subplots()
+
+                    if chart_type == "line":
+                        result.plot(kind="line", x=x, y=y, ax=ax)
+                    else:
+                        result.plot(kind="bar", x=x, y=y, ax=ax)
+
+                    st.pyplot(fig)
+
+                # -----------------------------
+                # AI Insights
+                # -----------------------------
+                with st.spinner("Generating insights..."):
+                    insights = generate_insights(result, user_query)
+
+                st.subheader("AI Insights")
+                st.write(insights)
+
+                # -----------------------------
+                # Export options
+                # -----------------------------
+                st.subheader("Download Report")
+
+                # CSV download
+                csv = result.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="Download CSV",
+                    data=csv,
+                    file_name=f"report_{i}.csv",
+                    mime="text/csv"
+                )
+
+                # Chart download
+                if fig:
+                    chart_path = f"chart_{i}.png"
+                    fig.savefig(chart_path)
+
+                    with open(chart_path, "rb") as file:
+                        st.download_button(
+                            label="Download Chart",
+                            data=file,
+                            file_name=f"chart_{i}.png",
+                            mime="image/png"
+                        )
+
             else:
-                st.success("Normal Transaction")
+                st.error(result)
 
-    except:
-        st.error("Invalid input format.")
+    # Save assistant response
+    st.session_state.messages.append(
+        {"role": "assistant", "content": "Response generated"}
+    )
+
+conn.close()
